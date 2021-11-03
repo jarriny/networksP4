@@ -49,7 +49,7 @@ while True:
 
   # If nothing is ready, we hit the timeout
   if result:
-    (data, addr) = result
+(data, addr) = result
 
     try:
       decoded = json.loads(data.decode())
