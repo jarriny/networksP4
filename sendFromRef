@@ -62,7 +62,7 @@ def send_next_packet(override):
     msg = json.dumps({"sequence": SEQUENCE, "data": b64encode(data).decode(), "ack": False, "eof": False})
     print("MSG:",msg)
     print("sequence", SEQUENCE)
-    #SEQUENCE += len(data) #increasing sequence
+    SEQUENCE += len(data) #increasing sequence
     timeSent = time.time()
     sentPackets[SEQUENCE] = (msg, timeSent + (2* rttime), timeSent)
 
@@ -72,7 +72,7 @@ def send_next_packet(override):
       log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
 
     LASTSEQ = SEQUENCE
-    SEQUENCE += len(data)
+    #SEQUENCE += len(data)
     print("MADE IT TO END OF SEND PACKET1")
     return True
   else:
@@ -80,23 +80,24 @@ def send_next_packet(override):
     Finished = True
     return False
 
-# Send first packet
-print("BEFORE SEND FIRST")
-send_next_packet(False)
-print("AFTER SEND FIRST")
 
-
-def resenfDropped(seq):
+def resendDropped(seq):
   timeSent = time.time()
   packet = sentPackets[seq][0]
   sentPackets[SEQUENCE] = (msg, timeSent + (2* rttime), timeSent)
-  if sock.sendto(msg.encode(), dest) < len(msg):
+  if sock.sendto(packet.encode(), dest) < len(packet):
       log("[error] unable to fully send packet")
   else:
       log("[send data] " + str(SEQUENCE) + " (" + str(len(packet)) + ")")
     print("MADE IT TO END OF SEND PACKET1")
     return True
 
+# Send first packet
+print("BEFORE SEND FIRST")
+send_next_packet(False)
+print("AFTER SEND FIRST")
+
+  
 # Now read in data, send packets
 while True:
   log("ABOUT TO SLEEP")
@@ -125,7 +126,7 @@ while True:
       lastACK = str(decoded['ack'])
 
       #updating rrtime and window
-      if decoded['ack'] not in ackedPackets:
+      if decoded['ack'] not in ackPackets:
         RTT = (0.875 * RTT) + \ (1 - 0.875) * (lastPacketTime - sentPackets[decoded['ack']][2])
         print("RTT: ", rttime)
         congestW += 1
@@ -133,11 +134,11 @@ while True:
 
       # If there is an ack, send next packet
       while len(sentPackets) - len(ackPackets) < congestW:
-        # Try to send next packet; break if no more data
+        # Try to send next packet
         if (not send_next_packet(False)):
           break
     #sus idk if need
-    if DONE and len(ackedPackets) == len(set(sentPackets)):
+    if DONE and len(ackPackets) == len(set(sentPackets)):
       break
 
     except (ValueError, KeyError, TypeError):
@@ -149,7 +150,7 @@ while True:
     for seq, packet in sentPackets.items():
             if seq not in ackPackets and droppedTime > packet[1]:
                 log("packet " + str(droppedTime - packet[1]))
-                resend_packet(seq)
+                resendDropped(seq)
                 congestW = 1
 
   else:
@@ -157,6 +158,7 @@ while True:
     log("[error] timeout")
     sys.exit(-1)
 
+    #want to make sure EOF not dropped
 for x in range(10):
         sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}).encode(), dest)
 sys.exit(0)
