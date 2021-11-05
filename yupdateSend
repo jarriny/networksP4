@@ -1,0 +1,142 @@
+#!/usr/bin/python3
+#
+# CS3700, Fall 2021
+# TCP Project Starter Code
+#
+
+import datetime
+import json
+import sys
+import socket
+import time
+
+from base64 import b64encode, decode
+
+# Keep track of sent and acked packets with their sequence number as key
+# SentPackets has (packet, time + rtt, time) as its value
+sentPackets = {}
+ackedPackets = set()
+
+CONGESTION_WINDOW = 1
+
+MSG_SIZE = 1500
+DATA_SIZE = 1000
+TIMEOUT = 30
+SEQUENCE = 0
+RTT = 0.5
+
+# Whether or not we have sent all packets
+DONE = False
+
+# Bind to localhost and an ephemeral port
+IP_PORT = sys.argv[1]
+UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
+dest = (UDP_IP, UDP_PORT)
+
+time.sleep(.5)
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(1)
+
+
+def log(string):
+    sys.stderr.write(datetime.datetime.now().strftime(
+        "%H:%M:%S.%f") + " 3700send: " + string + "\n")
+
+
+def send_next_packet():
+    global SEQUENCE, DONE
+    data = sys.stdin.buffer.read(DATA_SIZE)
+    # Data to send
+    if (len(data) > 0):
+        # print(str(b64encode(data)))
+        msg = json.dumps({"sequence": SEQUENCE, "data": b64encode(
+            data).decode(), "ack": False, "eof": False})
+        SEQUENCE += len(data)
+        sendTime = time.time()
+        sentPackets[SEQUENCE] = (msg, sendTime + (2*RTT), sendTime)
+        if sock.sendto(msg.encode(), dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+        return True
+    # No more data to send
+    else:
+        DONE = True
+        return False
+
+# Resends the packet with the given sequence number
+def resend_packet(sequence):
+    packetToSend = sentPackets[sequence][0]
+    sendTime = time.time()
+    sentPackets[sequence] = (packetToSend, sendTime + (2*RTT), sendTime)
+    if sock.sendto(packetToSend.encode(), dest) < len(packetToSend):
+        log("[error] unable to fully send packet")
+    else:
+        log("[send data] " + str(SEQUENCE) +
+            " (" + str(len(packetToSend)) + ")")
+    return True
+
+
+# Send first packet
+send_next_packet()
+
+# Now read in data, send packets
+while True:
+    log("ABOUT TO SLEEP")
+    try:
+        result = sock.recvfrom(MSG_SIZE)
+    except socket.timeout:
+        result = None
+    lastPacketSentTime = time.time()
+    if result:
+        (data, addr) = result
+        try:
+            lastPacketSentTime = time.time()
+            decoded = json.loads(data.decode())
+            log("[recv pkt] " + str(decoded))
+            log("[recv ack] " + str(decoded['ack']))
+
+            # If new ack number, then modify RTT and congestion window
+            if decoded['ack'] not in ackedPackets:
+                RTT = (0.875 * RTT) + \
+                    (1 - 0.875) * (lastPacketSentTime -
+                                   sentPackets[decoded['ack']][2])
+                print("RTT: ", RTT)
+                CONGESTION_WINDOW += 1
+                ackedPackets.add(decoded['ack'])
+            # print(ackedPackets, decoded['ack'])
+            # print(sentPackets.keys())
+            
+            # Send packets in respect to the congestion window 
+            while len(sentPackets) - len(ackedPackets) < CONGESTION_WINDOW:
+                if (not send_next_packet()):
+                    break
+            # If all packets are sent, we break the while loop
+            if DONE and len(ackedPackets) == len(set(sentPackets)):
+                break
+
+        except (ValueError, KeyError, TypeError):
+            log("[recv corrupt packet]")
+
+    # Retransmit dropped packet
+    newTime = time.time()
+    if (newTime-lastPacketSentTime)*1000 < TIMEOUT:
+        for sequenceNum, packet in sentPackets.items():
+            if sequenceNum not in ackedPackets and newTime > packet[1]:
+                log("packet " + str(newTime -
+                    packet[1]))
+                resend_packet(sequenceNum)
+                CONGESTION_WINDOW = 1
+    else:
+        log("[error] timeout")
+        sys.exit(-1)
+        
+# print("END")
+# Sending 10 times to ensure the EOF is not dropped...
+for _ in range(10):
+    sock.sendto(json.dumps({"eof": True, "data": "",
+                            "sequence": SEQUENCE, "ack": False}).encode(), dest)
+sys.exit(0)
