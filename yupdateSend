@@ -10,23 +10,24 @@ import sys
 import socket
 import time
 
-from base64 import b64encode, decode
+from base64 import b64encode
 
 # Keep track of sent and acked packets with their sequence number as key
 # SentPackets has (packet, time + rtt, time) as its value
 sentPackets = {}
-ackedPackets = set()
+ackPackets = set()
 
-CONGESTION_WINDOW = 1
+WINDOW = 1
 
 MSG_SIZE = 1500
 DATA_SIZE = 1000
 TIMEOUT = 30
 SEQUENCE = 0
-RTT = 0.5
 
-# Whether or not we have sent all packets
-DONE = False
+RTTIME = 0.5
+
+# all packets have been sent
+FINISHED = False
 
 # Bind to localhost and an ephemeral port
 IP_PORT = sys.argv[1]
@@ -47,36 +48,37 @@ def log(string):
 
 
 def send_next_packet():
-    global SEQUENCE, DONE
+    global SEQUENCE
+    global FINISHED
     data = sys.stdin.buffer.read(DATA_SIZE)
     # Data to send
     if (len(data) > 0):
-        # print(str(b64encode(data)))
+        
         msg = json.dumps({"sequence": SEQUENCE, "data": b64encode(
             data).decode(), "ack": False, "eof": False})
         SEQUENCE += len(data)
         sendTime = time.time()
-        sentPackets[SEQUENCE] = (msg, sendTime + (2*RTT), sendTime)
+        sentPackets[SEQUENCE] = (msg, sendTime + (2*RTTIME), sendTime)
         if sock.sendto(msg.encode(), dest) < len(msg):
             log("[error] unable to fully send packet")
         else:
             log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
         return True
-    # No more data to send
+    
     else:
-        DONE = True
+        FINISHED = True
         return False
 
 # Resends the packet with the given sequence number
-def resend_packet(sequence):
-    packetToSend = sentPackets[sequence][0]
+def resend(seq):
+    packet = sentPackets[seq][0]
     sendTime = time.time()
-    sentPackets[sequence] = (packetToSend, sendTime + (2*RTT), sendTime)
-    if sock.sendto(packetToSend.encode(), dest) < len(packetToSend):
+    sentPackets[seq] = (packet, sendTime + (2*RTTIME), sendTime)
+    if sock.sendto(packet.encode(), dest) < len(packet):
         log("[error] unable to fully send packet")
     else:
         log("[send data] " + str(SEQUENCE) +
-            " (" + str(len(packetToSend)) + ")")
+            " (" + str(len(packet)) + ")")
     return True
 
 
@@ -90,32 +92,31 @@ while True:
         result = sock.recvfrom(MSG_SIZE)
     except socket.timeout:
         result = None
-    lastPacketSentTime = time.time()
+    lastTime = time.time()
     if result:
         (data, addr) = result
         try:
-            lastPacketSentTime = time.time()
+            lastTime = time.time()
             decoded = json.loads(data.decode())
             log("[recv pkt] " + str(decoded))
             log("[recv ack] " + str(decoded['ack']))
 
-            # If new ack number, then modify RTT and congestion window
-            if decoded['ack'] not in ackedPackets:
-                RTT = (0.875 * RTT) + \
-                    (1 - 0.875) * (lastPacketSentTime -
+            # If new ack number, then modify RTTIME and congestion window
+            if decoded['ack'] not in ackPackets:
+                RTTIME = (0.875 * RTTIME) + \
+                    (1 - 0.875) * (lastTime -
                                    sentPackets[decoded['ack']][2])
-                print("RTT: ", RTT)
-                CONGESTION_WINDOW += 1
-                ackedPackets.add(decoded['ack'])
-            # print(ackedPackets, decoded['ack'])
-            # print(sentPackets.keys())
+                print("RTT: ", RTTIME)
+                WINDOW += 1
+                ackPackets.add(decoded['ack'])
+            
             
             # Send packets in respect to the congestion window 
-            while len(sentPackets) - len(ackedPackets) < CONGESTION_WINDOW:
+            while len(sentPackets) - len(ackPackets) < WINDOW:
                 if (not send_next_packet()):
                     break
             # If all packets are sent, we break the while loop
-            if DONE and len(ackedPackets) == len(set(sentPackets)):
+            if FINISHED and len(ackPackets) == len(set(sentPackets)):
                 break
 
         except (ValueError, KeyError, TypeError):
@@ -123,13 +124,13 @@ while True:
 
     # Retransmit dropped packet
     newTime = time.time()
-    if (newTime-lastPacketSentTime)*1000 < TIMEOUT:
-        for sequenceNum, packet in sentPackets.items():
-            if sequenceNum not in ackedPackets and newTime > packet[1]:
+    if (newTime-lastTime)*1000 < TIMEOUT:
+        for seq, packet in sentPackets.items():
+            if seq not in ackPackets and newTime > packet[1]:
                 log("packet " + str(newTime -
                     packet[1]))
-                resend_packet(sequenceNum)
-                CONGESTION_WINDOW = 1
+                resend(seq)
+                WINDOW = 1
     else:
         log("[error] timeout")
         sys.exit(-1)
